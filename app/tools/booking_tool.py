@@ -261,6 +261,55 @@ class GoogleCalendarManager:
             raise
 
 
+    async def cancel_meeting(self, user_email: str, reason: str) -> Optional[str]:
+        """Cancel a meeting based on user email and reason (Non-blocking)"""
+        if not self.service: return None
+        
+        return await asyncio.to_thread(self._cancel_meeting_sync, user_email, reason)
+
+    def _cancel_meeting_sync(self, user_email: str, reason: str) -> Optional[str]:
+        """Synchronous implementation of meeting cancellation"""
+        try:
+            logger.info(f"🗑️ Attempting to cancel meeting for {user_email} with reason: {reason}")
+            
+            # Search for future events
+            now = datetime.utcnow().isoformat() + 'Z'  # 'Z' indicates UTC time
+            
+            events_result = self.service.events().list(
+                calendarId=self.calendar_id,
+                timeMin=now,
+                maxResults=20,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            events = events_result.get('items', [])
+
+            for event in events:
+                # Check attendees
+                attendees = event.get('attendees', [])
+                attendee_emails = [a.get('email') for a in attendees]
+                
+                # Check if user is an attendee and reason matches summary
+                # We use a loose match for reason in summary
+                if user_email in attendee_emails and reason.lower() in event.get('summary', '').lower():
+                    logger.info(f"✅ Found meeting to cancel: {event.get('summary')} at {event.get('start')}")
+                    
+                    self.service.events().delete(
+                        calendarId=self.calendar_id,
+                        eventId=event['id'],
+                        sendUpdates='all'
+                    ).execute()
+                    
+                    return f"{event.get('summary')} on {event.get('start').get('dateTime') or event.get('start').get('date')}"
+
+            logger.info("⚠️ No matching meeting found to cancel.")
+            return None
+
+        except Exception as e:
+            logger.error(f"❌ Error cancelling meeting: {e}")
+            return None
+
+
 # Global instance
 try:
     calendar_manager = GoogleCalendarManager()
@@ -270,7 +319,7 @@ except Exception as e:
 
 
 @tool
-async def booking_agent_tool(date: str, time: str, reason: str = "General Consultation", user_email: str = "abhi.dhaka16@gmail.com") -> str:
+async def booking_agent_tool(date: str, time: str, reason: str = "General Consultation", user_email: str = "abhi.dhaka16@gmail.com", reschedule: bool = False) -> str:
     """
     Booking agent tool.
     
@@ -279,9 +328,10 @@ async def booking_agent_tool(date: str, time: str, reason: str = "General Consul
         time: The time for the appointment (e.g., "10:00 AM")
         reason: The reason or topic for the appointment (default: "General Consultation")
         user_email: The user's email address (default: "abhi.dhaka16@gmail.com")
+        reschedule: Set to True if the user wants to reschedule an existing appointment. This will attempt to cancel the previous meeting with the same reason.
     """
 
-    logger.info(f"📥 Booking Request: date={date}, time={time}, reason={reason}")
+    logger.info(f"📥 Booking Request: date={date}, time={time}, reason={reason}, reschedule={reschedule}")
 
     # Normalize date if needed
     date_str = date
@@ -304,6 +354,15 @@ async def booking_agent_tool(date: str, time: str, reason: str = "General Consul
         return "Calendar system is currently offline."
 
     try:
+        # Handle Rescheduling (Cancel old meeting first)
+        cancel_msg = ""
+        if reschedule:
+            cancelled_meeting = await calendar_manager.cancel_meeting(user_email, reason)
+            if cancelled_meeting:
+                cancel_msg = f"🗑️ **Previous meeting cancelled:** {cancelled_meeting}\n\n"
+            else:
+                cancel_msg = "⚠️ Could not find a previous meeting to cancel, but proceeding with new booking.\n\n"
+
         # Check availability (ASYNC)
         is_available = await calendar_manager.is_slot_available(date_str, time_str)
 
@@ -311,6 +370,7 @@ async def booking_agent_tool(date: str, time: str, reason: str = "General Consul
             # Get slots (ASYNC)
             available_slots = await calendar_manager.get_available_slots(date_str)
             return (
+                f"{cancel_msg}"
                 f"⛔ The slot **{time_str} on {date_str}** is not available.\n"
                 f"Available slots:\n" +
                 "\n".join(f"- {slot}" for slot in available_slots)
@@ -329,6 +389,7 @@ async def booking_agent_tool(date: str, time: str, reason: str = "General Consul
         )
 
         return (
+            f"{cancel_msg}"
             f"✅ Appointment booked!\n\n"
             f"📌 **Topic:** {reason}\n"
             f"📅 **Date:** {booking['date']}\n"
