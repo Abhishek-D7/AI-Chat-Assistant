@@ -1,3 +1,11 @@
 streamlit
 requests
 sseclient-py
+fastapi
+pydantic
+sentence_transformers
+langchain_core
+langchain_openai
+langgraph
+dotenv
+sseclient

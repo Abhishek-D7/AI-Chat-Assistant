@@ -1,8 +1,4 @@
 """
-================================================================================
-app/main.py - Updated for LangGraph Memory
-================================================================================
-
 UPDATES:
 1. ChatRequest now accepts 'thread_id'.
 2. /chat endpoint passes 'thread_id' to processing functions.
@@ -48,9 +44,9 @@ from app.langgraph_graph import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================================================================================
+
 # FASTAPI SETUP
-# ================================================================================
+
 
 app = FastAPI(
     title="B2B AI Chat API",
@@ -73,9 +69,8 @@ stream_timestamps: Dict[str, float] = {}  # Track stream creation time
 # User stats cache
 stats_cache = UserStatsCache(ttl_seconds=Config.STATS_CACHE_TTL)
 
-# ================================================================================
 # DATA MODELS
-# ================================================================================
+
 
 class LoginRequest(BaseModel):
     user_name: str
@@ -106,9 +101,7 @@ class ChatResponse(BaseModel):
 class CancelRequest(BaseModel):
     session_id: str
 
-# ================================================================================
 # SSE FORMATTING HELPER
-# ================================================================================
 
 def sse_streamer(async_generator: AsyncGenerator[Dict, None]) -> AsyncGenerator[str, None]:
     """Wraps the dictionary output into Server-Sent Events (SSE) format."""
@@ -128,9 +121,8 @@ def sse_streamer(async_generator: AsyncGenerator[Dict, None]) -> AsyncGenerator[
     return wrapper()
 
 
-# ================================================================================
+
 # ROUTES
-# ================================================================================
 
 @app.post("/user/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
