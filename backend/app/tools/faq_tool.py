@@ -25,12 +25,17 @@ class FAQRetriever:
     def _load(self):
         """Load FAISS index and metadata"""
         try:
-            self.index = faiss.read_index(self.faiss_index_path)
-            with open(self.metadata_path, 'rb') as f:
-                self.metadata = pickle.load(f)
-            print(f"✅ Loaded FAQ database: {len(self.metadata)} entries")
-        except FileNotFoundError:
-            print("⚠️ FAQ database not found. Using empty database.")
+            import os
+            if os.path.exists(self.faiss_index_path):
+                self.index = faiss.read_index(self.faiss_index_path)
+                with open(self.metadata_path, 'rb') as f:
+                    self.metadata = pickle.load(f)
+                print(f"✅ Loaded FAQ database: {len(self.metadata)} entries")
+            else:
+                print("⚠️ FAQ database not found. Using empty database.")
+                self.metadata = []
+        except Exception as e:
+            print(f"⚠️ Failed to load FAQ database: {e}. Using empty database.")
             self.metadata = []
     
     def search(self, query: str, top_k: int = 1) -> List[Dict]:

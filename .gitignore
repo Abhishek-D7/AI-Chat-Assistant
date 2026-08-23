@@ -17,3 +17,8 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+
+# client secrets file
+backend/client_secret.json
+backend/token.json

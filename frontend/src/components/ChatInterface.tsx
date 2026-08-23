@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Square } from 'lucide-react';
-import { Message } from '../App';
+import type { Message } from '../App';
 import CalendarPicker from './CalendarPicker';
 import { v4 as uuidv4 } from 'uuid';
 

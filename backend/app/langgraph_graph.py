@@ -39,19 +39,15 @@ def create_agent_graph():
     logger.info("🔨 Starting graph creation (Hierarchical)...")
     
     # Initialize LLM
-    openrouter_api_key = Config.OPENROUTER_API_KEY
+    hf_token = Config.HF_TOKEN
     
-    logger.info("☁️ Using OpenRouter LLM")
+    logger.info("☁️ Using HuggingFace Router LLM")
     llm = ChatOpenAI(
-        model='openai/gpt-oss-120b', # Or gpt-4o if preferred for routing
+        model='meta-llama/Meta-Llama-3.1-8B-Instruct', # Supported HF model
         temperature=0.1, # Low temp for routing
-        api_key=openrouter_api_key,
-        base_url="https://openrouter.ai/api/v1",
-        streaming=True,
-        default_headers={
-            "HTTP-Referer": "https://github.com/your-repo",
-            "X-Title": Config.APP_TITLE
-        }
+        api_key=hf_token,
+        base_url="https://router.huggingface.co/v1",
+        streaming=True
     )
     
     # Create Sub-Agents

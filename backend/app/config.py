@@ -17,17 +17,18 @@ class Config:
     DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
     
     # Google Credentials
-    GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "client_secret.json")
-    GOOGLE_TOKEN_FILE = os.getenv("GOOGLE_TOKEN_FILE", "token.json")
+    GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS", "client_secret.json")
+    GOOGLE_TOKEN = os.getenv("GOOGLE_TOKEN", "token.json")
     
     # API Keys
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    HF_TOKEN = os.getenv("HF_TOKEN")
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-    PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "chat-conversations")
+    PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "chat-assistent")
     
     # App Settings
-    APP_TITLE = os.getenv("APP_TITLE", "B2B AI Chat Assistant")
+    APP_TITLE = os.getenv("APP_TITLE", "AI Chat Assistant")
     
     # Cache Settings
     EMBEDDING_CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", 1000))

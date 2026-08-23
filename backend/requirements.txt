@@ -3,9 +3,15 @@ sseclient-py
 fastapi
 pydantic
 sentence_transformers
-langchain_core
+langchain
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
 langchain_openai
 langgraph
 python-dotenv
-pinecone-client
+pinecone
 uvicorn
+cachetools
+pytz
+faiss-cpu

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';

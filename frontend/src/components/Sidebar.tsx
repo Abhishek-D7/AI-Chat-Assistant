@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { LogOut, PlusCircle, Activity, MessageSquare } from 'lucide-react';
+import { LogOut, PlusCircle, Activity } from 'lucide-react';
 
 interface SidebarProps {
   userName: string;

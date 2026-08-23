@@ -21,8 +21,8 @@ class GoogleCalendarManager:
     
     def __init__(self):
         """Initialize Google Calendar manager"""
-        self.credentials_file = Config.GOOGLE_CREDENTIALS_FILE
-        self.token_file = Config.GOOGLE_TOKEN_FILE
+        self.credentials_file = Config.GOOGLE_CREDENTIALS
+        self.token_file = Config.GOOGLE_TOKEN
         self.scopes = ['https://www.googleapis.com/auth/calendar']
         self.service = None
         
@@ -67,7 +67,7 @@ class GoogleCalendarManager:
                 if not creds:
                     logger.info("🔐 Requesting new authorization (Browser will open)...")
                     if not os.path.exists(self.credentials_file):
-                        logger.error(f"❌ Missing {self.credentials_file}. Cannot authenticate.")
+                        logger.error(f"❌ Missing Google Credentials. Cannot authenticate.")
                         # Don't raise here to allow app to start without calendar
                         return
                         
