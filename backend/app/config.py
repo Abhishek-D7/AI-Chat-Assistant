@@ -23,6 +23,8 @@ class Config:
     # API Keys
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+    PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "chat-conversations")
     
     # App Settings
     APP_TITLE = os.getenv("APP_TITLE", "B2B AI Chat Assistant")
