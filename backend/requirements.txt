@@ -13,5 +13,11 @@ python-dotenv
 pinecone
 uvicorn
 cachetools
-pytz
+pytz==2024.1
+
+# AWS & Ingestion
+boto3>=1.34.69
+langchain-aws>=0.1.6
+pymupdf>=1.24.4
+python-multipart>=0.0.9
 faiss-cpu

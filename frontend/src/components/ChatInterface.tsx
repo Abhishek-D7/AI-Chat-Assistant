@@ -1,6 +1,14 @@
+"use client";
+
 import { useState, useRef, useEffect } from 'react';
 import { Send, Square } from 'lucide-react';
-import type { Message } from '../App';
+
+export interface Message {
+  role: 'user' | 'bot';
+  content: string;
+  agent?: string;
+  is_booking?: boolean;
+}
 import CalendarPicker from './CalendarPicker';
 import { v4 as uuidv4 } from 'uuid';
 

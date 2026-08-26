@@ -1,18 +1,12 @@
+"use client";
+
 import { useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import Sidebar from './components/Sidebar';
-import ChatInterface from './components/ChatInterface';
+import Sidebar from '@/components/Sidebar';
+import ChatInterface from '@/components/ChatInterface';
 import { Bot, LogIn } from 'lucide-react';
-import './App.css'; // Optional if we keep it
 
-export interface Message {
-  role: 'user' | 'bot';
-  content: string;
-  agent?: string;
-  is_booking?: boolean;
-}
-
-function App() {
+export default function Home() {
   const [userName, setUserName] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string>('');
@@ -97,5 +91,3 @@ function App() {
     </div>
   );
 }
-
-export default App;

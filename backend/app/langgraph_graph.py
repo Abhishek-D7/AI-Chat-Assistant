@@ -1,7 +1,7 @@
 
 from typing import TypedDict, Annotated, Literal, Optional, Dict, AsyncGenerator, Any
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+from langchain_aws import ChatBedrock
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel
@@ -39,14 +39,13 @@ def create_agent_graph():
     logger.info("🔨 Starting graph creation (Hierarchical)...")
     
     # Initialize LLM
-    hf_token = Config.HF_TOKEN
-    
-    logger.info("☁️ Using HuggingFace Router LLM")
-    llm = ChatOpenAI(
-        model='meta-llama/Meta-Llama-3.1-8B-Instruct', # Supported HF model
-        temperature=0.1, # Low temp for routing
-        api_key=hf_token,
-        base_url="https://router.huggingface.co/v1",
+    logger.info("☁️ Using Amazon Bedrock LLM (Claude 3 Haiku)")
+    llm = ChatBedrock(
+        model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        region_name=Config.AWS_REGION,
+        aws_access_key_id=Config.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=Config.AWS_SECRET_ACCESS_KEY,
+        model_kwargs={"temperature": 0.1},
         streaming=True
     )
     
@@ -167,8 +166,14 @@ def process_user_message_with_context(
     
     try:
         graph = get_agent_graph()
+        
+        msg_list = []
+        if context_summary:
+            msg_list.append(SystemMessage(content=f"Context from previous sessions:\n{context_summary}"))
+        msg_list.append(HumanMessage(content=user_message))
+        
         initial_state = AgentState(
-            messages=[HumanMessage(content=user_message)],
+            messages=msg_list,
             user_id=user_id,
             user_name=user_name,
             context_summary=context_summary,
@@ -206,8 +211,13 @@ async def process_user_message_with_context_streaming(
 
     graph = get_agent_graph()
     
+    msg_list = []
+    if context_summary:
+        msg_list.append(SystemMessage(content=f"Context from previous sessions:\n{context_summary}"))
+    msg_list.append(HumanMessage(content=user_message))
+    
     initial_state = AgentState(
-        messages=[HumanMessage(content=user_message)],
+        messages=msg_list,
         user_id=user_id,
         user_name=user_name,
         context_summary=context_summary,

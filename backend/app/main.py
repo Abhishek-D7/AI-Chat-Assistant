@@ -62,6 +62,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.routers import ingest
+app.include_router(ingest.router, prefix="/api", tags=["ingest"])
+
 # Global state for active streams/cancellation with TTL tracking
 active_streams: Dict[str, asyncio.Event] = {}
 stream_timestamps: Dict[str, float] = {}  # Track stream creation time
@@ -137,12 +140,48 @@ async def login(request: LoginRequest):
         status="success"
     )
 
+from langchain_aws import ChatBedrock
+from langchain_core.messages import HumanMessage
+
+summary_llm = None
+def get_summary_llm():
+    global summary_llm
+    if summary_llm is None:
+        summary_llm = ChatBedrock(
+            model_id="anthropic.claude-3-haiku-20240307-v1:0",
+            region_name=Config.AWS_REGION,
+            aws_access_key_id=Config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=Config.AWS_SECRET_ACCESS_KEY,
+            model_kwargs={"temperature": 0.1},
+        )
+    return summary_llm
+
+async def generate_history_summary(user_name: str) -> str:
+    history = await asyncio.to_thread(persistence.get_user_history, user_name, limit=20)
+    if not history:
+        return ""
+    
+    history_text = "\n".join([f"User: {m.get('user_message', '')[:100]}\nBot: {m.get('bot_response', '')[:100]}" for m in history])
+    llm = get_summary_llm()
+    prompt = f"Briefly summarize the key facts, context, and user intents from this past conversation history. Keep it under 3 sentences to save tokens.\n\nHistory:\n{history_text}"
+    try:
+        resp = await llm.ainvoke([HumanMessage(content=prompt)])
+        return resp.content
+    except Exception as e:
+        logger.error(f"Error summarizing memory: {e}")
+        return "Past conversation context available but failed to summarize."
+
 @app.post("/chat")
 async def generate_chat_response(request: ChatRequest, background_tasks: BackgroundTasks):
     user_message = request.user_message.strip()
     user_name = request.user_name
     user_id = request.user_id
     context_summary = request.context_summary
+    
+    # 0. Summarize Chat Memory
+    memory_summary = await generate_history_summary(user_name)
+    if memory_summary:
+        context_summary = f"{context_summary}\n\nPast Memory Summary:\n{memory_summary}".strip()
     
     # 1. Handle IDs
     # session_id: unique for this specific request/turn (used for Milvus logs)

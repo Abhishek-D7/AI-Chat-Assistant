@@ -1,3 +1,5 @@
+"use client";
+
 import { useEffect, useState } from 'react';
 import { LogOut, PlusCircle, Activity } from 'lucide-react';
 
