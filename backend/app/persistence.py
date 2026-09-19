@@ -1,11 +1,12 @@
 from pinecone import Pinecone, ServerlessSpec
-from sentence_transformers import SentenceTransformer
 from datetime import datetime, timedelta
 import os
 import logging
 import time
 import uuid
 from typing import List, Dict, Optional
+# pyrefly: ignore [missing-import]
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from app.cache import EmbeddingCache
 from app.config import Config
 
@@ -22,11 +23,9 @@ class ChatPersistence:
         self.buffer_timestamps: Dict[str, float] = {}  # Track buffer creation time
         self.BATCH_SIZE = 5
         self.BUFFER_TTL = Config.BUFFER_TTL
-        # -------------------------------------
         
-        # --- Embedding Cache ---
+        # Initialize Memory Cache
         self.embedding_cache = EmbeddingCache(max_size=Config.EMBEDDING_CACHE_SIZE)
-        # -----------------------
 
         if not self.api_key:
             logger.error("❌ PINECONE_API_KEY not set")
@@ -35,7 +34,10 @@ class ChatPersistence:
 
         try:
             self.pc = Pinecone(api_key=self.api_key)
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.embedding_model = HuggingFaceInferenceAPIEmbeddings(
+                api_key=Config.HF_TOKEN,
+                model_name="BAAI/bge-large-en-v1.5"
+            )
             self._ensure_index()
             self.index = self.pc.Index(self.index_name)
             logger.info("✅ Pinecone initialized successfully")
@@ -50,7 +52,7 @@ class ChatPersistence:
             print(f"DEBUG: Creating Pinecone index '{self.index_name}'...")
             self.pc.create_index(
                 name=self.index_name,
-                dimension=384,
+                dimension=1024,
                 metric="cosine",
                 spec=ServerlessSpec(cloud="aws", region="us-east-1")
             )
@@ -64,7 +66,7 @@ class ChatPersistence:
             combined_text = f"{user_message} {bot_response}"
             embedding = self.embedding_cache.get(combined_text)
             if embedding is None:
-                embedding = self.embedding_model.encode(combined_text).tolist()
+                embedding = self.embedding_model.embed_query(combined_text)
                 self.embedding_cache.set(combined_text, embedding)
             
             user_message_truncated = user_message[:2000]
@@ -126,7 +128,7 @@ class ChatPersistence:
         if not self.index:
             return []
         try:
-            dummy_vector = [0.0] * 384
+            dummy_vector = [0.0] * 1024
             res = self.index.query(
                 vector=dummy_vector,
                 filter={"user_name": {"$eq": user_name}},
@@ -152,7 +154,7 @@ class ChatPersistence:
         if not self.index:
             return {}
         try:
-            dummy_vector = [0.0] * 384
+            dummy_vector = [0.0] * 1024
             res = self.index.query(
                 vector=dummy_vector,
                 filter={"user_name": {"$eq": user_name}},

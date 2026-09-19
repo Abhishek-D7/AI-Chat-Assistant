@@ -56,7 +56,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:5173", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -140,19 +140,18 @@ async def login(request: LoginRequest):
         status="success"
     )
 
-from langchain_aws import ChatBedrock
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 summary_llm = None
 def get_summary_llm():
     global summary_llm
     if summary_llm is None:
-        summary_llm = ChatBedrock(
-            model_id="anthropic.claude-3-haiku-20240307-v1:0",
-            region_name=Config.AWS_REGION,
-            aws_access_key_id=Config.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=Config.AWS_SECRET_ACCESS_KEY,
-            model_kwargs={"temperature": 0.1},
+        summary_llm = ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=Config.OPENROUTER_API_KEY,
+            model="openrouter/free",
+            temperature=0.1,
         )
     return summary_llm
 
@@ -166,7 +165,7 @@ async def generate_history_summary(user_name: str) -> str:
     prompt = f"Briefly summarize the key facts, context, and user intents from this past conversation history. Keep it under 3 sentences to save tokens.\n\nHistory:\n{history_text}"
     try:
         resp = await llm.ainvoke([HumanMessage(content=prompt)])
-        return resp.content
+        return str(resp.content)
     except Exception as e:
         logger.error(f"Error summarizing memory: {e}")
         return "Past conversation context available but failed to summarize."
@@ -286,10 +285,6 @@ async def cancel_stream(request: CancelRequest):
         return {"status": "cancelled", "session_id": session_id}
     else:
         return {"status": "not_found", "session_id": session_id}
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
 
 @app.get("/user/{user_name}/history")
 async def get_user_history(user_name: str, limit: int = 20):

@@ -25,7 +25,7 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     HF_TOKEN = os.getenv("HF_TOKEN")
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-    PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "chat-assistent")
+    PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "chat-assistant")
     
     # AWS Config
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")

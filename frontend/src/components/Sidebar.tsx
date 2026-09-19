@@ -74,13 +74,13 @@ export default function Sidebar({ userName, threadId, onNewChat, onLogout }: Sid
             
             <div style={{ marginBottom: '10px' }}>
               <span style={{ color: 'var(--text-secondary)', display: 'block', marginBottom: '5px' }}>Intents:</span>
-              {Object.entries(stats.intents).length === 0 ? (
+              {Object.entries(stats.intents || {}).length === 0 ? (
                 <span style={{ fontSize: '0.8rem' }}>No data</span>
               ) : (
-                Object.entries(stats.intents).map(([intent, count]) => (
+                Object.entries(stats.intents || {}).map(([intent, count]) => (
                   <div key={intent} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                     <span>{intent}</span>
-                    <span style={{ color: 'var(--aurora-blue)' }}>{count}</span>
+                    <span style={{ color: 'var(--aurora-blue)' }}>{count as React.ReactNode}</span>
                   </div>
                 ))
               )}

@@ -39,13 +39,13 @@ def create_agent_graph():
     logger.info("🔨 Starting graph creation (Hierarchical)...")
     
     # Initialize LLM
-    logger.info("☁️ Using Amazon Bedrock LLM (Claude 3 Haiku)")
-    llm = ChatBedrock(
-        model_id="anthropic.claude-3-haiku-20240307-v1:0",
-        region_name=Config.AWS_REGION,
-        aws_access_key_id=Config.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=Config.AWS_SECRET_ACCESS_KEY,
-        model_kwargs={"temperature": 0.1},
+    logger.info("☁️ Using OpenRouter API (openrouter/free)")
+    from langchain_openai import ChatOpenAI
+    llm = ChatOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=Config.OPENROUTER_API_KEY,
+        model="openrouter/free",
+        temperature=0.1,
         streaming=True
     )
     
