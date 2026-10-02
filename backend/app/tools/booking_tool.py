@@ -1,4 +1,4 @@
-from langchain.tools import tool
+from langchain_core.tools import tool, StructuredTool
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import os
@@ -65,31 +65,29 @@ class GoogleCalendarManager:
                 
                 # 3. New Login (if no creds or refresh failed)
                 if not creds:
-                    logger.info("🔐 Requesting new authorization (Browser will open)...")
                     if not os.path.exists(self.credentials_file):
-                        logger.error(f"❌ Missing Google Credentials. Cannot authenticate.")
-                        # Don't raise here to allow app to start without calendar
+                        logger.warning(f"Google credentials file ({self.credentials_file}) not found. Calendar booking unavailable.")
                         return
-                        
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        self.credentials_file, self.scopes
-                    )
-                    creds = flow.run_local_server(port=0)
-                
-                # 4. Save valid token
-                with open(self.token_file, 'w') as token:
-                    token.write(creds.to_json())
+                    # Avoid blocking backend startup with interactive prompt if token.json is missing
+                    logger.warning(f"Google Calendar token ({self.token_file}) not found. Please authenticate Google Calendar separately.")
+                    return
             
             self.service = build('calendar', 'v3', credentials=creds)
-            logger.info("✅ Google Calendar authenticated")
-        
+            logger.info("Google Calendar authenticated successfully")
+
         except Exception as e:
             logger.error(f"❌ Calendar auth failed completely: {e}")
             self.service = None
 
+    def _ensure_authenticated(self) -> bool:
+        """Dynamically re-checks token.json if not yet authenticated."""
+        if not self.service:
+            self._authenticate()
+        return bool(self.service)
+
     async def is_slot_available(self, date_str: str, time_slot: str) -> bool:
         """Check if a specific time slot is available (Non-blocking)"""
-        if not self.service: return False
+        if not self._ensure_authenticated(): return False
         
         return await asyncio.to_thread(self._is_slot_available_sync, date_str, time_slot)
 
@@ -318,19 +316,8 @@ except Exception as e:
     calendar_manager = None
 
 
-@tool
-async def booking_agent_tool(date: str, time: str, reason: str = "General Consultation", user_email: str = "abhi.dhaka16@gmail.com", reschedule: bool = False) -> str:
-    """
-    Booking agent tool.
-    
-    Args:
-        date: The date for the appointment (e.g., "2025-11-27" or "tomorrow")
-        time: The time for the appointment (e.g., "10:00 AM")
-        reason: The reason or topic for the appointment (default: "General Consultation")
-        user_email: The user's email address (default: "abhi.dhaka16@gmail.com")
-        reschedule: Set to True if the user wants to reschedule an existing appointment. This will attempt to cancel the previous meeting with the same reason.
-    """
-
+async def _booking_agent_tool_async(date: str, time: str, reason: str = "General Consultation", user_email: str = "abhi.dhaka16@gmail.com", reschedule: bool = False) -> str:
+    """Async implementation of booking agent tool."""
     logger.info(f"📥 Booking Request: date={date}, time={time}, reason={reason}, reschedule={reschedule}")
 
     # Normalize date if needed
@@ -350,8 +337,12 @@ async def booking_agent_tool(date: str, time: str, reason: str = "General Consul
     if not date_str or not time_str:
         return "I need both date and time to book your appointment."
     
-    if not calendar_manager:
-        return "Calendar system is currently offline."
+    if not calendar_manager or not calendar_manager._ensure_authenticated():
+        return (
+            f"📅 Booking Request received for **{reason}** on **{date_str} at {time_str}**.\n\n"
+            f"Google Calendar credentials are not connected (offline demo mode). "
+            f"Please click **'Open Calendar'** below to view available slots and manage your appointment!"
+        )
 
     try:
         # Handle Rescheduling (Cancel old meeting first)
@@ -400,3 +391,27 @@ async def booking_agent_tool(date: str, time: str, reason: str = "General Consul
     except Exception as e:
         logger.error(f"❌ Error in booking_agent_tool: {e}", exc_info=True)
         return "Something went wrong while booking. Try again."
+
+def _booking_agent_tool_sync(date: str, time: str, reason: str = "General Consultation", user_email: str = "abhi.dhaka16@gmail.com", reschedule: bool = False) -> str:
+    """Sync implementation of booking agent tool supporting both worker threads and event loops."""
+    import concurrent.futures
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, _booking_agent_tool_async(date, time, reason, user_email, reschedule))
+                return future.result()
+        else:
+            return loop.run_until_complete(_booking_agent_tool_async(date, time, reason, user_email, reschedule))
+    except RuntimeError:
+        return asyncio.run(_booking_agent_tool_async(date, time, reason, user_email, reschedule))
+
+booking_agent_tool = StructuredTool.from_function(
+    func=_booking_agent_tool_sync,
+    coroutine=_booking_agent_tool_async,
+    name="booking_agent_tool",
+    description=(
+        "Booking agent tool to book, reschedule, and check calendar appointment slots. "
+        "Provide date (e.g. 'tomorrow' or '2025-11-27'), time (e.g. '12:00 PM'), and topic/reason."
+    )
+)

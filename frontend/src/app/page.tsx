@@ -6,10 +6,15 @@ import Sidebar from '@/components/Sidebar';
 import ChatInterface from '@/components/ChatInterface';
 import { Bot, LogIn } from 'lucide-react';
 
+import { getApiBaseUrl } from '@/utils/api';
+
+import DocumentIngest from '@/components/DocumentIngest';
+
 export default function Home() {
   const [userName, setUserName] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'chat' | 'ingest'>('chat');
   const [showLogin, setShowLogin] = useState<boolean>(true);
   const [loginInput, setLoginInput] = useState('');
 
@@ -19,12 +24,12 @@ export default function Home() {
     if (!loginInput.trim()) return;
 
     try {
-      // Assuming backend is running on 8000
-      const response = await fetch('http://localhost:8000/user/login', {
+      const response = await fetch(`${getApiBaseUrl()}/user/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_name: loginInput })
       });
+
       
       if (response.ok) {
         const data = await response.json();
@@ -45,6 +50,7 @@ export default function Home() {
     setUserName(null);
     setUserId(null);
     setThreadId('');
+    setActiveTab('chat');
     setShowLogin(true);
   };
 
@@ -78,16 +84,25 @@ export default function Home() {
       <Sidebar 
         userName={userName!} 
         threadId={threadId} 
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
         onNewChat={() => setThreadId(uuidv4())} 
         onLogout={handleLogout} 
       />
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', position: 'relative' }}>
-        <ChatInterface 
-          userName={userName!} 
-          userId={userId!} 
-          threadId={threadId} 
-        />
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', position: 'relative', overflow: 'hidden' }}>
+        {activeTab === 'chat' ? (
+          <ChatInterface 
+            userName={userName!} 
+            userId={userId!} 
+            threadId={threadId} 
+          />
+        ) : (
+          <DocumentIngest 
+            userName={userName!} 
+          />
+        )}
       </main>
     </div>
   );
 }
+

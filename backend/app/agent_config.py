@@ -10,9 +10,11 @@ AGENTS_CONFIG = {
     },
     "support_agent": {
         "name": "SupportAgent",
-        "description": "Responsible for answering FAQs, technical support questions, and handling human handoffs.",
-        "system_prompt": "You are a specialized Support Agent. You answer questions using the FAQ tool and can escalate to a human if needed."
+        "description": "Responsible for answering user queries, questions about uploaded documents, policies, products, and services using vector similarity search.",
+        "system_prompt": "You are a specialized Support Agent. When the user asks any question, query, or seeks information from uploaded documents or the knowledge base, use the retrieved context from similarity_search_tool to answer accurately and factually. Always ground your responses in the document context. If the user is distressed or demands human assistance, escalate using human_handoff_tool."
     }
+
+
 }
 
 # List of agent names for the supervisor to choose from

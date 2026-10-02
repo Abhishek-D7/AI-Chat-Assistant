@@ -4,6 +4,8 @@ venv/
 env/
 .env
 
+token.json
+
 # Python Cache
 __pycache__/
 *.py[cod]

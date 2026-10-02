@@ -1,6 +1,11 @@
 import os
 from dotenv import load_dotenv
 
+# Try loading from backend/.env first, then fallback to default search
+current_dir = os.path.dirname(os.path.abspath(__file__))
+backend_env = os.path.join(os.path.dirname(current_dir), ".env")
+if os.path.exists(backend_env):
+    load_dotenv(backend_env)
 load_dotenv()
 
 class Config:
@@ -17,8 +22,20 @@ class Config:
     DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
     
     # Google Credentials
-    GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS", "client_secret.json")
-    GOOGLE_TOKEN = os.getenv("GOOGLE_TOKEN", "token.json")
+    _cred_env = os.getenv("GOOGLE_CREDENTIALS", "client_secret.json")
+    if not os.path.isabs(_cred_env) and not os.path.exists(_cred_env):
+        _alt_cred = os.path.join(os.path.dirname(current_dir), _cred_env)
+        GOOGLE_CREDENTIALS = _alt_cred if os.path.exists(_alt_cred) else _cred_env
+    else:
+        GOOGLE_CREDENTIALS = _cred_env
+
+    _tok_env = os.getenv("GOOGLE_TOKEN", "token.json")
+    if not os.path.isabs(_tok_env) and not os.path.exists(_tok_env):
+        _alt_tok = os.path.join(os.path.dirname(current_dir), _tok_env)
+        GOOGLE_TOKEN = _alt_tok if os.path.exists(_alt_tok) else _tok_env
+    else:
+        GOOGLE_TOKEN = _tok_env
+
     
     # API Keys
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")

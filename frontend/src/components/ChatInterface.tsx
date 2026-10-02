@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { Send, Square } from 'lucide-react';
+import { Send, Square, Zap, ZapOff } from 'lucide-react';
+import CalendarPicker from './CalendarPicker';
+import { v4 as uuidv4 } from 'uuid';
+import { getApiBaseUrl } from '@/utils/api';
 
 export interface Message {
   role: 'user' | 'bot';
@@ -9,8 +12,6 @@ export interface Message {
   agent?: string;
   is_booking?: boolean;
 }
-import CalendarPicker from './CalendarPicker';
-import { v4 as uuidv4 } from 'uuid';
 
 interface ChatInterfaceProps {
   userName: string;
@@ -23,6 +24,7 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingMessage, setStreamingMessage] = useState('');
+  const [useStreaming, setUseStreaming] = useState(false); // Default to stable non-streaming, toggleable
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   
   const [showCalendarForIdx, setShowCalendarForIdx] = useState<number | null>(null);
@@ -41,7 +43,7 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
     
     if (currentSessionId) {
       try {
-        await fetch('http://localhost:8000/chat/cancel', {
+        await fetch(`${getApiBaseUrl()}/chat/cancel`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: currentSessionId })
@@ -73,28 +75,54 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
     abortControllerRef.current = new AbortController();
 
     try {
-      const response = await fetch('http://localhost:8000/chat', {
+      const response = await fetch(`${getApiBaseUrl()}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_message: userMsg,
           user_name: userName,
           user_id: userId,
-          stream_enabled: true,
-          context_summary: "User chat from React UI",
+          stream_enabled: useStreaming,
+          context_summary: "",
           thread_id: threadId
         }),
         signal: abortControllerRef.current.signal
       });
 
-      if (!response.ok) throw new Error("Network response was not ok");
-      if (!response.body) throw new Error("No response body");
+      if (!response.ok) throw new Error(`Server returned error: ${response.status}`);
+
+      const contentType = response.headers.get("content-type") || "";
+
+      // 1. NON-STREAMING / JSON RESPONSE PATH
+      if (!useStreaming || contentType.includes("application/json")) {
+        const data = await response.json();
+        const botResponse = data.bot_response || "No response received from the assistant.";
+        const intent = data.intent || "SupportAgent";
+        const isBooking = intent === 'BookingAgent' || 
+          botResponse.toLowerCase().includes('appointment') || 
+          botResponse.toLowerCase().includes('booked') ||
+          botResponse.toLowerCase().includes('meeting') ||
+          botResponse.toLowerCase().includes('open calendar') || 
+          botResponse.includes('BOOKING_REQUEST');
+
+        setIsStreaming(false);
+        setHistory(prev => [...prev, {
+          role: 'bot',
+          content: botResponse,
+          agent: intent === 'BookingAgent' ? 'BOOKING AGENT' : 'SUPPORT AGENT',
+          is_booking: isBooking
+        }]);
+        return;
+      }
+
+      // 2. STREAMING (SSE) PATH
+      if (!response.body) throw new Error("No response body received");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
       
       let fullResponse = '';
-      let intent = 'general';
+      let intent = 'SupportAgent';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -118,7 +146,7 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
               break;
             }
           } catch (e) {
-            // sometimes it sends raw text directly depending on the backend implementation
+            // raw text token fallback
             if (dataStr && !dataStr.startsWith('{')) {
               fullResponse += dataStr;
               setStreamingMessage(fullResponse);
@@ -129,8 +157,36 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
 
       setIsStreaming(false);
       setStreamingMessage('');
-      const isBooking = intent === 'booking' || fullResponse.includes('BOOKING_REQUEST');
-      setHistory(prev => [...prev, { role: 'bot', content: fullResponse, agent: intent, is_booking: isBooking }]);
+
+      // Fallback if streaming ended without tokens
+      if (!fullResponse.trim()) {
+        try {
+          const fallbackRes = await fetch(`${getApiBaseUrl()}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              user_message: userMsg,
+              user_name: userName,
+              user_id: userId,
+              stream_enabled: false,
+              context_summary: "",
+              thread_id: threadId
+            })
+          });
+          const fbData = await fallbackRes.json();
+          fullResponse = fbData.bot_response || "No response received.";
+        } catch {
+          fullResponse = "The free model did not stream tokens. Try toggling 'Stream OFF' above for direct responses.";
+        }
+      }
+
+      const isBooking = intent === 'BookingAgent' || fullResponse.includes('BOOKING_REQUEST');
+      setHistory(prev => [...prev, {
+        role: 'bot',
+        content: fullResponse,
+        agent: intent === 'BookingAgent' ? 'BOOKING AGENT' : 'SUPPORT AGENT',
+        is_booking: isBooking
+      }]);
       
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -139,7 +195,10 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
         console.error('Fetch error:', err);
         setIsStreaming(false);
         setStreamingMessage('');
-        setHistory(prev => [...prev, { role: 'bot', content: "Sorry, an error occurred." }]);
+        setHistory(prev => [...prev, {
+          role: 'bot',
+          content: `Unable to get a response: ${err.message || 'Server connection error'}. Please try again or toggle Stream mode.`
+        }]);
       }
     }
   };
@@ -147,35 +206,64 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', padding: '20px' }}>
       {/* Header */}
-      <header style={{ paddingBottom: '20px', borderBottom: '1px solid var(--glass-border)', marginBottom: '20px', display: 'flex', justifyContent: 'space-between' }}>
-        <h2 className="text-aurora">Chat Session</h2>
+      <header style={{ paddingBottom: '20px', borderBottom: '1px solid var(--glass-border)', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h2 className="text-aurora" style={{ margin: 0 }}>Chat Session</h2>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+            Knowledge Retrieval (RAG) + Multi-Agent Assistant
+          </span>
+        </div>
+
+        {/* Streaming Mode Toggle */}
+        <button
+          onClick={() => setUseStreaming(!useStreaming)}
+          className="btn-secondary"
+          title="Toggle between instant direct response and token-by-token streaming"
+          style={{
+            fontSize: '0.8rem',
+            padding: '6px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            borderColor: useStreaming ? 'var(--aurora-green)' : 'var(--glass-border)',
+            color: useStreaming ? 'var(--aurora-green)' : 'var(--text-secondary)',
+            background: useStreaming ? 'rgba(74, 222, 128, 0.1)' : 'transparent',
+            borderRadius: '20px',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          {useStreaming ? <Zap size={14} /> : <ZapOff size={14} />}
+          <span>Stream: {useStreaming ? 'ON' : 'OFF'}</span>
+        </button>
       </header>
 
       {/* Messages */}
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', paddingRight: '10px' }}>
         {history.length === 0 && !isStreaming && (
           <div style={{ margin: 'auto', color: 'var(--text-secondary)', textAlign: 'center' }}>
-            <p>No messages yet.</p>
-            <p>Start chatting below!</p>
+            <p style={{ fontSize: '1.1rem', marginBottom: '8px' }}>👋 Welcome, {userName}!</p>
+            <p style={{ fontSize: '0.9rem' }}>Ask questions about your uploaded documents, policies, or request assistance.</p>
           </div>
         )}
         
         {history.map((msg, idx) => (
           <div key={idx} style={{ 
             alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-            maxWidth: '75%'
+            maxWidth: '80%'
           }}>
             <div className={`glass-panel animate-fade-in`} style={{
-              padding: '15px', 
-              background: msg.role === 'user' ? 'rgba(96, 239, 255, 0.05)' : 'var(--glass-bg)',
-              border: msg.role === 'user' ? '1px solid rgba(96, 239, 255, 0.2)' : '1px solid var(--glass-border)',
+              padding: '16px 20px', 
+              background: msg.role === 'user' ? 'rgba(96, 239, 255, 0.08)' : 'var(--glass-bg)',
+              border: msg.role === 'user' ? '1px solid rgba(96, 239, 255, 0.25)' : '1px solid var(--glass-border)',
+              borderRadius: '12px'
             }}>
               {msg.role === 'bot' && (
-                <div style={{ fontSize: '0.8rem', color: 'var(--aurora-blue)', marginBottom: '8px', textTransform: 'uppercase' }}>
-                  🤖 {msg.agent || 'ASSISTANT'}
+                <div style={{ fontSize: '0.75rem', color: 'var(--aurora-blue)', marginBottom: '8px', fontWeight: 600, letterSpacing: '0.5px' }}>
+                  🤖 {msg.agent || 'SUPPORT AGENT'}
                 </div>
               )}
-              <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>
+              <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', fontSize: '0.95rem' }}>
                 {msg.content}
               </div>
             </div>
@@ -205,10 +293,12 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
         ))}
 
         {isStreaming && (
-          <div style={{ alignSelf: 'flex-start', maxWidth: '75%' }}>
-            <div className="glass-panel animate-fade-in" style={{ padding: '15px' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--aurora-blue)', marginBottom: '8px' }}>🤖 ASSISTANT</div>
-              <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>
+          <div style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
+            <div className="glass-panel animate-fade-in" style={{ padding: '16px 20px', borderRadius: '12px' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--aurora-blue)', marginBottom: '8px', fontWeight: 600 }}>
+                🤖 SUPPORT AGENT
+              </div>
+              <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', fontSize: '0.95rem' }}>
                 {streamingMessage}
                 <span style={{ display: 'inline-block', width: '8px', height: '15px', background: 'var(--aurora-green)', marginLeft: '4px', animation: 'blink 1s infinite' }}></span>
               </div>
@@ -225,18 +315,18 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') handleSend() }}
-          placeholder="Type your message..."
+          placeholder="Type your question or query..."
           className="input-glass"
-          style={{ flex: 1 }}
+          style={{ flex: 1, padding: '12px 16px' }}
           disabled={isStreaming}
         />
         {isStreaming ? (
           <button onClick={cancelStream} className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ff4b4b', borderColor: 'rgba(255, 75, 75, 0.3)' }}>
-            <Square size={20} fill="currentColor" /> Stop
+            <Square size={18} fill="currentColor" /> Stop
           </button>
         ) : (
           <button onClick={handleSend} className="btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Send size={20} /> Send
+            <Send size={18} /> Send
           </button>
         )}
       </div>

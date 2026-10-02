@@ -1,16 +1,13 @@
-
-from typing import TypedDict, Annotated, Literal, Optional, Dict, AsyncGenerator, Any
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-from langchain_aws import ChatBedrock
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
-from pydantic import BaseModel
-import operator
+import re
 import os
 import logging
-from dotenv import load_dotenv
 import asyncio
 import json
+from typing import TypedDict, Annotated, Literal, Optional, Dict, AsyncGenerator, Any
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
+from dotenv import load_dotenv
 
 load_dotenv()
 from app.config import Config
@@ -19,6 +16,8 @@ from app.state import AgentState
 from app.agent_config import AGENTS_CONFIG, AGENT_NAMES
 from app.agents import create_booking_agent, create_support_agent
 
+from app.ml.llm_client import get_resilient_llm, clean_llm_text, is_safety_or_invalid_output
+
 logger = logging.getLogger(__name__)
 
 # Initialize system message cache
@@ -26,75 +25,59 @@ system_message_cache = SystemMessageCache(max_size=Config.SYSTEM_MESSAGE_CACHE_S
 
 agent_graph = None
 
-# ================================================================================
-# SUPERVISOR NODE
-# ================================================================================
-
-class RouteResponse(BaseModel):
-    next: Literal["BookingAgent", "SupportAgent", "FINISH"]
+# SUPERVISOR NODE (Deterministic Hybrid Routing for Free/Random Models)
 
 def create_agent_graph():
-    """Create the Hierarchical Agent Graph"""
+    """Create the Hierarchical Agent Graph with resilient routing and fallbacks."""
     
     logger.info("🔨 Starting graph creation (Hierarchical)...")
     
-    # Initialize LLM
-    logger.info("☁️ Using OpenRouter API (openrouter/free)")
-    from langchain_openai import ChatOpenAI
-    llm = ChatOpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=Config.OPENROUTER_API_KEY,
-        model="openrouter/free",
-        temperature=0.1,
-        streaming=True
-    )
+    # Initialize resilient LLM with multi-model fallbacks
+    logger.info("☁️ Initializing Resilient Free LLM client")
+    llm = get_resilient_llm(streaming=True)
     
     # Create Sub-Agents
     booking_agent_graph = create_booking_agent(llm)
     support_agent_graph = create_support_agent(llm)
     
-    # Supervisor Node
     def supervisor_node(state: AgentState):
-        messages = state["messages"]
-        user_name = state.get("user_name", "User")
+        messages = state.get("messages", [])
+        last_message = messages[-1] if messages else None
         
-        system_prompt = (
-            "You are a supervisor tasked with managing a conversation between the"
-            f" following workers: {AGENT_NAMES}. Given the following user request,"
-            " respond with the worker to act next. Each worker will perform a"
-            " task and respond with their results and status. When finished,"
-            " respond with FINISH."
-            "\n\n"
-            "Worker Descriptions:\n"
-        )
-        
-        for agent_id, config in AGENTS_CONFIG.items():
-            system_prompt += f"- {config['name']}: {config['description']}\n"
+        # 1. If an agent has already produced an AIMessage with content, conversation turn is complete!
+        if isinstance(last_message, AIMessage) and getattr(last_message, "content", ""):
+            logger.info("🚦 Supervisor: Agent response completed -> FINISH")
+            return {"next": "FINISH"}
             
-        system_prompt += f"\nUser: {user_name}"
+        # 2. Extract latest user query text
+        user_query = ""
+        for m in reversed(messages):
+            if isinstance(m, HumanMessage):
+                user_query = m.content
+                break
+            elif hasattr(m, "content") and getattr(m, "type", "") == "human":
+                user_query = m.content
+                break
+            elif isinstance(m, dict) and m.get("role") == "user":
+                user_query = m.get("content", "")
+                break
         
-        # We use structured output for reliable routing
-        try:
-            # Using with_structured_output if available
-            response = llm.with_structured_output(RouteResponse).invoke(
-                [SystemMessage(content=system_prompt)] + messages
-            )
-            next_agent = response.next
-        except Exception as e:
-            logger.warning(f"⚠️ Structured output failed: {e}. Fallback to text analysis.")
-            # Fallback: Ask for just the name
-            fallback_prompt = system_prompt + "\n\nReturn ONLY the name of the next worker or FINISH."
-            resp = llm.invoke([SystemMessage(content=fallback_prompt)] + messages)
-            content = resp.content.strip()
-            # Simple matching
-            if "BookingAgent" in content:
-                next_agent = "BookingAgent"
-            elif "SupportAgent" in content:
-                next_agent = "SupportAgent"
-            else:
-                next_agent = "FINISH"
+        q_lower = (user_query or "").lower().strip()
         
-        logger.info(f"🚦 Supervisor routed to: {next_agent}")
+        # 3. Deterministic intent routing (resilient against unpredictable free OpenRouter models)
+        booking_keywords = [
+            "book", "booking", "schedule", "appointment", "calendar", 
+            "meeting", "consultation", "reschedule", "reserve", "slot"
+        ]
+        is_booking = any(kw in q_lower for kw in booking_keywords)
+        
+        if is_booking:
+            next_agent = "BookingAgent"
+        else:
+            # Default for all questions, document queries, and general inquiries
+            next_agent = "SupportAgent"
+        
+        logger.info(f"🚦 Supervisor routed user query to: {next_agent}")
         return {"next": next_agent}
 
     # Build Graph
@@ -126,7 +109,7 @@ def create_agent_graph():
     checkpointer = MemorySaver()
     
     compiled_graph = workflow.compile(checkpointer=checkpointer)
-    compiled_graph._llm = llm # Store for streaming access
+    compiled_graph._llm = llm
     
     return compiled_graph
 
@@ -137,24 +120,7 @@ def get_agent_graph():
         agent_graph = create_agent_graph()
     return agent_graph
 
-# ================================================================================
-# HELPER: DETECT INTENT
-# ================================================================================
-
-def detect_intent_from_messages(messages: list, tool_map: dict = None) -> str:
-    """
-    Detect intent based on the last active agent or tool calls.
-    """
-    # Simple heuristic: Check if any tool was called recently
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
-            return "tool_use"
-            
-    return "general"
-
-# ================================================================================
-# NON-STREAMING
-# ================================================================================
+# NON-STREAMING HANDLER
 
 def process_user_message_with_context(
     user_message: str,
@@ -169,7 +135,7 @@ def process_user_message_with_context(
         
         msg_list = []
         if context_summary:
-            msg_list.append(SystemMessage(content=f"Context from previous sessions:\n{context_summary}"))
+            msg_list.append(SystemMessage(content=f"Context:\n{context_summary}"))
         msg_list.append(HumanMessage(content=user_message))
         
         initial_state = AgentState(
@@ -179,26 +145,52 @@ def process_user_message_with_context(
             context_summary=context_summary,
             next=""
         )
-        config = {"configurable": {"thread_id": thread_id}} if thread_id else None
+        active_thread_id = thread_id or f"thread_{user_id}"
+        config = {"configurable": {"thread_id": active_thread_id}}
         
         result = graph.invoke(initial_state, config=config)
-        final_message = result["messages"][-1]
+
+        # Find the last AIMessage with valid content
+        response_text = ""
+        intent = "general"
         
-        response_text = final_message.content if hasattr(final_message, "content") else str(final_message)
-        
-        detected_intent = "general" 
-        
+        for msg in reversed(result.get("messages", [])):
+            if isinstance(msg, AIMessage) and getattr(msg, "content", ""):
+                candidate = clean_llm_text(str(msg.content))
+                if not is_safety_or_invalid_output(candidate):
+                    response_text = candidate
+                    break
+            elif hasattr(msg, "content") and getattr(msg, "type", "") == "ai":
+                candidate = clean_llm_text(str(msg.content))
+                if not is_safety_or_invalid_output(candidate):
+                    response_text = candidate
+                    break
+
+        if not response_text:
+            response_text = "I processed your request, but no response text was returned. Please try rephrasing your question."
+
+        # Detect active agent intent
+        booking_keywords = [
+            "book", "booking", "schedule", "appointment", "calendar", 
+            "meeting", "consultation", "reschedule", "reserve", "slot"
+        ]
+        is_booking = any(kw in user_message.lower() for kw in booking_keywords)
+        for msg in result.get("messages", []):
+            if hasattr(msg, "tool_calls") and any("booking" in getattr(tc, "name", tc.get("name", "")).lower() for tc in getattr(msg, "tool_calls", [])):
+                is_booking = True
+                break
+
+        intent = "BookingAgent" if is_booking else "SupportAgent"
+
         return {
             "bot_response": response_text,
-            "intent": detected_intent
+            "intent": intent
         }
     except Exception as e:
-        logger.error(f"❌ Error: {e}", exc_info=True)
-        return {"bot_response": "Error processing message.", "intent": "error"}
+        logger.error(f"❌ Error in process_user_message_with_context: {e}", exc_info=True)
+        return {"bot_response": f"An error occurred while processing: {str(e)}", "intent": "error"}
 
-# ================================================================================
-# STREAMING HANDLER
-# ================================================================================
+# STREAMING HANDLER (With Instant Fallback for Non-Streaming Models)
 
 async def process_user_message_with_context_streaming(
     user_message: str,
@@ -211,9 +203,17 @@ async def process_user_message_with_context_streaming(
 
     graph = get_agent_graph()
     
+    # Emit intent early so UI labels the agent correctly
+    booking_keywords = [
+        "book", "booking", "schedule", "appointment", "calendar", 
+        "meeting", "consultation", "reschedule", "reserve", "slot"
+    ]
+    initial_intent = "BookingAgent" if any(kw in user_message.lower() for kw in booking_keywords) else "SupportAgent"
+    yield {"type": "intent", "content": initial_intent}
+    
     msg_list = []
     if context_summary:
-        msg_list.append(SystemMessage(content=f"Context from previous sessions:\n{context_summary}"))
+        msg_list.append(SystemMessage(content=f"Context:\n{context_summary}"))
     msg_list.append(HumanMessage(content=user_message))
     
     initial_state = AgentState(
@@ -224,13 +224,17 @@ async def process_user_message_with_context_streaming(
         next=""
     )
     
-    config = {"configurable": {"thread_id": thread_id}} if thread_id else None
+    active_thread_id = thread_id or f"thread_{user_id}"
+    config = {"configurable": {"thread_id": active_thread_id}}
 
-    logger.info(f"🚀 Starting streaming graph execution for thread_id={thread_id}")
+    logger.info(f"🚀 Starting streaming graph execution for thread_id={active_thread_id}")
+
+    yielded_tokens = 0
+    in_think_tag = False
 
     try:
-        # Use astream_events to get tokens and tool events
-        async for event in graph.astream_events(initial_state, config=config, version="v1"):
+        # Use astream_events to stream tokens as they arrive
+        async for event in graph.astream_events(initial_state, config=config, version="v2"):
             
             if cancel_flag and cancel_flag.is_set():
                 yield {"type": "cancelled", "content": "Stream cancelled"}
@@ -243,11 +247,32 @@ async def process_user_message_with_context_streaming(
                 data = event.get("data", {})
                 chunk = data.get("chunk")
                 
-                # Only yield content tokens
                 if hasattr(chunk, "content") and chunk.content:
-                    yield {"type": "token", "content": chunk.content}
+                    text_chunk = str(chunk.content)
+                    
+                    # Filter out <think> tags if reasoning model streams them
+                    if "<think>" in text_chunk:
+                        in_think_tag = True
+                    if "</think>" in text_chunk:
+                        in_think_tag = False
+                        text_chunk = text_chunk.split("</think>")[-1]
+                    
+                    if not in_think_tag and text_chunk:
+                        yielded_tokens += 1
+                        yield {"type": "token", "content": text_chunk}
 
-            # 2. Handle Tool Execution
+            # 2. Fallback if model didn't stream token-by-token but finished with output
+            elif event_type == "on_chat_model_end":
+                if yielded_tokens == 0:
+                    data = event.get("data", {})
+                    output = data.get("output")
+                    if output and hasattr(output, "content") and output.content:
+                        clean_text = clean_llm_text(str(output.content))
+                        if clean_text:
+                            yielded_tokens += 1
+                            yield {"type": "token", "content": clean_text}
+
+            # 3. Handle Tool Execution Notification
             elif event_type == "on_tool_start":
                 tool_name = event.get("name")
                 if tool_name and tool_name not in ["_Exception", "LangGraph"]:
@@ -256,6 +281,31 @@ async def process_user_message_with_context_streaming(
             
     except Exception as e:
         logger.error(f"❌ Streaming error: {e}", exc_info=True)
-        yield {"type": "error", "content": str(e)}
+        # If streaming errored, attempt non-streaming fallback
+        if yielded_tokens == 0:
+            try:
+                res = await asyncio.to_thread(
+                    process_user_message_with_context,
+                    user_message, user_id, user_name, context_summary, thread_id
+                )
+                yield {"type": "token", "content": res.get("bot_response", "")}
+                yielded_tokens += 1
+            except Exception:
+                yield {"type": "error", "content": str(e)}
+
+    # Fail-safe: If zero tokens were delivered during streaming, run non-streaming directly
+    if yielded_tokens == 0:
+        logger.warning("⚠️ No tokens were yielded during streaming. Invoking non-streaming fallback.")
+        try:
+            res = await asyncio.to_thread(
+                process_user_message_with_context,
+                user_message, user_id, user_name, context_summary, thread_id
+            )
+            bot_text = res.get("bot_response", "")
+            if bot_text:
+                yield {"type": "token", "content": bot_text}
+        except Exception as fb_err:
+            logger.error(f"❌ Fallback failed: {fb_err}")
+            yield {"type": "token", "content": "Unable to generate a response at this moment. Please try again."}
 
     yield {"type": "done", "content": ""}
