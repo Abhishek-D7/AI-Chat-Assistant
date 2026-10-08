@@ -24,3 +24,12 @@ dist/
 # client secrets file
 backend/client_secret.json
 backend/token.json
+
+# LangGraph Studio runtime caches (not part of the chat assistant app)
+.langgraph_api/
+**/.langgraph_api/
+*.pckl
+
+# Frontend build & dependencies
+frontend/.next/
+frontend/node_modules/

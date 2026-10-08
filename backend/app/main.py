@@ -8,7 +8,8 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, List, Dict, AsyncGenerator
+from typing import Optional, List, Dict, AsyncGenerator, Any
+import os
 import uuid
 import logging
 import json
@@ -99,6 +100,7 @@ class ChatRequest(BaseModel):
     stream_enabled: bool = True
     context_summary: str = ""
     thread_id: Optional[str] = None # <--- ADDED for Memory
+    guardrail_settings: Optional[Dict[str, bool]] = None
 
 class ChatResponse(BaseModel):
     user_message: str
@@ -108,6 +110,11 @@ class ChatResponse(BaseModel):
     intent: str
     session_id: str
     thread_id: str
+    guardrail_triggered: bool = False
+    guardrail_info: Optional[Dict[str, Any]] = None
+
+class GuardrailsConfigRequest(BaseModel):
+    settings: Dict[str, bool]
 
 class CancelRequest(BaseModel):
     session_id: str
@@ -166,11 +173,13 @@ async def generate_chat_response(request: ChatRequest, background_tasks: Backgro
         try:
             result = await asyncio.to_thread(
                 process_user_message_with_context,
-                user_message, user_id, user_name, context_summary, thread_id
+                user_message, user_id, user_name, context_summary, thread_id, request.guardrail_settings
             )
             
             bot_response = result.get("bot_response", "")
             detected_intent = result.get("intent", "general")
+            guardrail_triggered = result.get("guardrail_triggered", False)
+            guardrail_info = result.get("guardrail_info", None)
             
             await async_store_conversation(
                 user_name, user_id, session_id, 
@@ -184,7 +193,9 @@ async def generate_chat_response(request: ChatRequest, background_tasks: Backgro
                 user_name=user_name,
                 intent=detected_intent,
                 session_id=session_id,
-                thread_id=thread_id
+                thread_id=thread_id,
+                guardrail_triggered=guardrail_triggered,
+                guardrail_info=guardrail_info
             )
         except Exception as e:
             logger.error(f"❌ Non-streaming chat error: {e}", exc_info=True)
@@ -202,7 +213,8 @@ async def generate_chat_response(request: ChatRequest, background_tasks: Backgro
         raw_stream_generator = process_user_message_with_context_streaming(
             user_message, user_id, user_name, context_summary, 
             cancel_flag=cancel_flag, 
-            thread_id=thread_id
+            thread_id=thread_id,
+            guardrail_settings=request.guardrail_settings
         )
         
         sse_generator = sse_streamer(raw_stream_generator)
@@ -339,6 +351,44 @@ def get_cache_stats():
             "size": len(stats_cache._cache),
             "max_size": stats_cache._cache.maxsize
         }
+    }
+
+@app.get("/graph/info")
+def get_graph_info():
+    """Get Mermaid flow chart diagram, node structure, and LangSmith Studio access info"""
+    from app.langgraph_graph import get_agent_graph
+    try:
+        g = get_agent_graph()
+        mermaid_str = g.get_graph().draw_mermaid()
+    except Exception as e:
+        logger.warning(f"Failed to generate mermaid diagram: {e}")
+        mermaid_str = ""
+        
+    return {
+        "mermaid": mermaid_str,
+        "studio_url": "https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024",
+        "local_dev_url": "http://127.0.0.1:2024",
+        "langsmith_tracing": os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true",
+        "project_name": os.getenv("LANGCHAIN_PROJECT", "AI-Chat-Assistant")
+    }
+
+@app.get("/guardrails/config")
+def get_guardrails_config():
+    """Get all available guardrails with their metadata and current ON/OFF status."""
+    from app.guardrails.manager import guardrail_manager, GUARDRAILS_METADATA
+    return {
+        "settings": guardrail_manager.get_settings(),
+        "metadata": GUARDRAILS_METADATA
+    }
+
+@app.post("/guardrails/config")
+def update_guardrails_config(req: GuardrailsConfigRequest):
+    """Update global guardrail toggle states."""
+    from app.guardrails.manager import guardrail_manager
+    guardrail_manager.update_settings(req.settings)
+    return {
+        "status": "success",
+        "settings": guardrail_manager.get_settings()
     }
 
 if __name__ == "__main__":

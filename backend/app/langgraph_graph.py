@@ -105,10 +105,8 @@ def create_agent_graph():
     workflow.add_edge("BookingAgent", "supervisor")
     workflow.add_edge("SupportAgent", "supervisor")
     
-    # Checkpointer
-    checkpointer = MemorySaver()
-    
-    compiled_graph = workflow.compile(checkpointer=checkpointer)
+    # Compile Graph (checkpointer is handled by LangGraph API/Studio or caller)
+    compiled_graph = workflow.compile()
     compiled_graph._llm = llm
     
     return compiled_graph
@@ -120,6 +118,9 @@ def get_agent_graph():
         agent_graph = create_agent_graph()
     return agent_graph
 
+# Expose compiled graph for LangGraph Studio / CLI / LangSmith
+graph = get_agent_graph()
+
 # NON-STREAMING HANDLER
 
 def process_user_message_with_context(
@@ -127,16 +128,32 @@ def process_user_message_with_context(
     user_id: str,
     user_name: str,
     context_summary: str = "",
-    thread_id: Optional[str] = None
-) -> Dict[str, str]:
+    thread_id: Optional[str] = None,
+    guardrail_settings: Optional[Dict[str, bool]] = None
+) -> Dict[str, Any]:
     
     try:
+        from app.guardrails import guardrail_manager
+        
+        # 1. Evaluate Input Guardrails (Prompt Injection, PII, Length)
+        input_guard_res = guardrail_manager.check_input(user_message, guardrail_settings)
+        if input_guard_res.blocked:
+            logger.warning(f"🛡️ Message blocked by guardrail: {input_guard_res.guardrail}")
+            return {
+                "bot_response": input_guard_res.notification_message,
+                "intent": "guardrail_blocked",
+                "guardrail_triggered": True,
+                "guardrail_info": input_guard_res.to_dict()
+            }
+        
+        effective_message = input_guard_res.sanitized_input or user_message
+        
         graph = get_agent_graph()
         
         msg_list = []
         if context_summary:
             msg_list.append(SystemMessage(content=f"Context:\n{context_summary}"))
-        msg_list.append(HumanMessage(content=user_message))
+        msg_list.append(HumanMessage(content=effective_message))
         
         initial_state = AgentState(
             messages=msg_list,
@@ -169,6 +186,31 @@ def process_user_message_with_context(
         if not response_text:
             response_text = "I processed your request, but no response text was returned. Please try rephrasing your question."
 
+        # 2. Output Guardrails (Secret & Credential Leak Filter)
+        clean_response, output_guard_res = guardrail_manager.check_output(response_text, guardrail_settings)
+
+        # 3. Detect if response is a tool guardrail notification
+        is_tool_guardrail = (
+            "🛡️ **Guardrail" in clean_response or 
+            "outside our business hours" in clean_response.lower() or
+            "falls outside our business hours" in clean_response.lower()
+        )
+        guardrail_triggered = is_tool_guardrail or input_guard_res.warning_only or bool(output_guard_res)
+        
+        guardrail_info = None
+        if input_guard_res.warning_only:
+            guardrail_info = input_guard_res.to_dict()
+        elif output_guard_res:
+            guardrail_info = output_guard_res.to_dict()
+        elif is_tool_guardrail:
+            guardrail_info = {
+                "blocked": True,
+                "guardrail": "booking_rules",
+                "guardrail_name": "Working Hours & Booking Rules",
+                "reason": "Appointment policy or working hours constraint violated",
+                "suggestion": "Select a slot Monday-Friday between 9:00 AM and 6:00 PM."
+            }
+
         # Detect active agent intent
         booking_keywords = [
             "book", "booking", "schedule", "appointment", "calendar", 
@@ -183,8 +225,10 @@ def process_user_message_with_context(
         intent = "BookingAgent" if is_booking else "SupportAgent"
 
         return {
-            "bot_response": response_text,
-            "intent": intent
+            "bot_response": clean_response,
+            "intent": intent,
+            "guardrail_triggered": guardrail_triggered,
+            "guardrail_info": guardrail_info
         }
     except Exception as e:
         logger.error(f"❌ Error in process_user_message_with_context: {e}", exc_info=True)
@@ -198,8 +242,26 @@ async def process_user_message_with_context_streaming(
     user_name: str,
     context_summary: str = "",
     cancel_flag: Optional[asyncio.Event] = None,
-    thread_id: Optional[str] = None
-) -> AsyncGenerator[Dict[str, str], None]:
+    thread_id: Optional[str] = None,
+    guardrail_settings: Optional[Dict[str, bool]] = None
+) -> AsyncGenerator[Dict[str, Any], None]:
+
+    from app.guardrails import guardrail_manager
+
+    # 1. Evaluate Input Guardrails
+    input_guard_res = guardrail_manager.check_input(user_message, guardrail_settings)
+    if input_guard_res.blocked:
+        logger.warning(f"🛡️ Streaming message blocked by guardrail: {input_guard_res.guardrail}")
+        yield {"type": "intent", "content": "guardrail_blocked"}
+        yield {"type": "guardrail", "data": input_guard_res.to_dict()}
+        yield {"type": "content", "content": input_guard_res.notification_message}
+        yield {"type": "done"}
+        return
+
+    effective_message = input_guard_res.sanitized_input or user_message
+
+    if input_guard_res.warning_only:
+        yield {"type": "guardrail", "data": input_guard_res.to_dict()}
 
     graph = get_agent_graph()
     
@@ -208,13 +270,13 @@ async def process_user_message_with_context_streaming(
         "book", "booking", "schedule", "appointment", "calendar", 
         "meeting", "consultation", "reschedule", "reserve", "slot"
     ]
-    initial_intent = "BookingAgent" if any(kw in user_message.lower() for kw in booking_keywords) else "SupportAgent"
+    initial_intent = "BookingAgent" if any(kw in effective_message.lower() for kw in booking_keywords) else "SupportAgent"
     yield {"type": "intent", "content": initial_intent}
     
     msg_list = []
     if context_summary:
         msg_list.append(SystemMessage(content=f"Context:\n{context_summary}"))
-    msg_list.append(HumanMessage(content=user_message))
+    msg_list.append(HumanMessage(content=effective_message))
     
     initial_state = AgentState(
         messages=msg_list,

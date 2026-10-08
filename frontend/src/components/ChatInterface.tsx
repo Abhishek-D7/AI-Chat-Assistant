@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { Send, Square, Zap, ZapOff } from 'lucide-react';
+import { Send, Square, Zap, ZapOff, ShieldAlert, ShieldCheck, AlertTriangle } from 'lucide-react';
 import CalendarPicker from './CalendarPicker';
 import { v4 as uuidv4 } from 'uuid';
 import { getApiBaseUrl } from '@/utils/api';
@@ -11,15 +11,25 @@ export interface Message {
   content: string;
   agent?: string;
   is_booking?: boolean;
+  guardrail_triggered?: boolean;
+  guardrail_info?: {
+    blocked?: boolean;
+    guardrail?: string;
+    guardrail_name?: string;
+    reason?: string;
+    suggestion?: string;
+    warning_only?: boolean;
+  };
 }
 
 interface ChatInterfaceProps {
   userName: string;
   userId: string;
   threadId: string;
+  guardrails?: Record<string, boolean>;
 }
 
-export default function ChatInterface({ userName, userId, threadId }: ChatInterfaceProps) {
+export default function ChatInterface({ userName, userId, threadId, guardrails = {} }: ChatInterfaceProps) {
   const [history, setHistory] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -84,7 +94,8 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
           user_id: userId,
           stream_enabled: useStreaming,
           context_summary: "",
-          thread_id: threadId
+          thread_id: threadId,
+          guardrail_settings: guardrails
         }),
         signal: abortControllerRef.current.signal
       });
@@ -98,6 +109,11 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
         const data = await response.json();
         const botResponse = data.bot_response || "No response received from the assistant.";
         const intent = data.intent || "SupportAgent";
+        const isGuardrail = data.guardrail_triggered || 
+          botResponse.includes('🛡️ **Guardrail') || 
+          botResponse.includes('🛡️ **Privacy') || 
+          intent === 'guardrail_blocked';
+
         const isBooking = intent === 'BookingAgent' || 
           botResponse.toLowerCase().includes('appointment') || 
           botResponse.toLowerCase().includes('booked') ||
@@ -109,8 +125,10 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
         setHistory(prev => [...prev, {
           role: 'bot',
           content: botResponse,
-          agent: intent === 'BookingAgent' ? 'BOOKING AGENT' : 'SUPPORT AGENT',
-          is_booking: isBooking
+          agent: isGuardrail ? 'GUARDRAIL ENGINE' : (intent === 'BookingAgent' ? 'BOOKING AGENT' : 'SUPPORT AGENT'),
+          is_booking: isBooking,
+          guardrail_triggered: isGuardrail,
+          guardrail_info: data.guardrail_info
         }]);
         return;
       }
@@ -123,6 +141,8 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
       
       let fullResponse = '';
       let intent = 'SupportAgent';
+      let guardrailInfo: any = null;
+      let isGuardrail = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -140,8 +160,15 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
             if (data.type === 'token') {
               fullResponse += data.content;
               setStreamingMessage(fullResponse);
+            } else if (data.type === 'content') {
+              fullResponse += data.content;
+              setStreamingMessage(fullResponse);
             } else if (data.type === 'intent') {
               intent = data.content;
+              if (data.content === 'guardrail_blocked') isGuardrail = true;
+            } else if (data.type === 'guardrail') {
+              guardrailInfo = data.data;
+              isGuardrail = true;
             } else if (data.type === 'cancelled' || data.type === 'done') {
               break;
             }
@@ -170,22 +197,33 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
               user_id: userId,
               stream_enabled: false,
               context_summary: "",
-              thread_id: threadId
+              thread_id: threadId,
+              guardrail_settings: guardrails
             })
           });
           const fbData = await fallbackRes.json();
           fullResponse = fbData.bot_response || "No response received.";
+          if (fbData.guardrail_triggered) {
+            isGuardrail = true;
+            guardrailInfo = fbData.guardrail_info;
+          }
         } catch {
           fullResponse = "The free model did not stream tokens. Try toggling 'Stream OFF' above for direct responses.";
         }
+      }
+
+      if (fullResponse.includes('🛡️ **Guardrail') || fullResponse.includes('🛡️ **Privacy')) {
+        isGuardrail = true;
       }
 
       const isBooking = intent === 'BookingAgent' || fullResponse.includes('BOOKING_REQUEST');
       setHistory(prev => [...prev, {
         role: 'bot',
         content: fullResponse,
-        agent: intent === 'BookingAgent' ? 'BOOKING AGENT' : 'SUPPORT AGENT',
-        is_booking: isBooking
+        agent: isGuardrail ? 'GUARDRAIL ENGINE' : (intent === 'BookingAgent' ? 'BOOKING AGENT' : 'SUPPORT AGENT'),
+        is_booking: isBooking,
+        guardrail_triggered: isGuardrail,
+        guardrail_info: guardrailInfo
       }]);
       
     } catch (err: any) {
@@ -250,22 +288,71 @@ export default function ChatInterface({ userName, userId, threadId }: ChatInterf
         {history.map((msg, idx) => (
           <div key={idx} style={{ 
             alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-            maxWidth: '80%'
+            maxWidth: '85%'
           }}>
             <div className={`glass-panel animate-fade-in`} style={{
               padding: '16px 20px', 
-              background: msg.role === 'user' ? 'rgba(96, 239, 255, 0.08)' : 'var(--glass-bg)',
-              border: msg.role === 'user' ? '1px solid rgba(96, 239, 255, 0.25)' : '1px solid var(--glass-border)',
-              borderRadius: '12px'
+              background: msg.role === 'user' 
+                ? 'rgba(96, 239, 255, 0.08)' 
+                : (msg.guardrail_triggered ? 'rgba(255, 180, 0, 0.06)' : 'var(--glass-bg)'),
+              border: msg.role === 'user' 
+                ? '1px solid rgba(96, 239, 255, 0.25)' 
+                : (msg.guardrail_triggered ? '1px solid rgba(255, 180, 0, 0.45)' : '1px solid var(--glass-border)'),
+              borderRadius: '12px',
+              boxShadow: msg.guardrail_triggered ? '0 0 20px rgba(255, 180, 0, 0.15)' : 'none'
             }}>
               {msg.role === 'bot' && (
-                <div style={{ fontSize: '0.75rem', color: 'var(--aurora-blue)', marginBottom: '8px', fontWeight: 600, letterSpacing: '0.5px' }}>
-                  🤖 {msg.agent || 'SUPPORT AGENT'}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                  {msg.guardrail_triggered ? (
+                    <div style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      fontSize: '0.74rem',
+                      color: '#ffb400',
+                      background: 'rgba(255, 180, 0, 0.15)',
+                      border: '1px solid rgba(255, 180, 0, 0.35)',
+                      borderRadius: '14px',
+                      padding: '3px 10px',
+                      fontWeight: 700
+                    }}>
+                      <ShieldAlert size={14} /> 
+                      {msg.guardrail_info?.guardrail_name || 'GUARDRAIL ALERT'}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--aurora-blue)', fontWeight: 600, letterSpacing: '0.5px' }}>
+                      🤖 {msg.agent || 'SUPPORT AGENT'}
+                    </div>
+                  )}
                 </div>
               )}
               <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', fontSize: '0.95rem' }}>
                 {msg.content}
               </div>
+
+              {/* Actionable Correction Box for Guardrail Alerts */}
+              {msg.guardrail_info?.suggestion && (
+                <div style={{
+                  marginTop: '12px',
+                  padding: '10px 14px',
+                  background: 'rgba(255, 180, 0, 0.08)',
+                  border: '1px solid rgba(255, 180, 0, 0.25)',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '8px',
+                  fontSize: '0.82rem',
+                  color: '#fef3c7'
+                }}>
+                  <AlertTriangle size={16} color="#ffb400" style={{ flexShrink: 0, marginTop: '2px' }} />
+                  <div>
+                    <strong style={{ color: '#ffb400', display: 'block', marginBottom: '2px' }}>
+                      How to correct this:
+                    </strong>
+                    {msg.guardrail_info.suggestion}
+                  </div>
+                </div>
+              )}
             </div>
 
             {msg.is_booking && showCalendarForIdx !== idx && (

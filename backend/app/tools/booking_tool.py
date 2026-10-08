@@ -337,6 +337,14 @@ async def _booking_agent_tool_async(date: str, time: str, reason: str = "General
     if not date_str or not time_str:
         return "I need both date and time to book your appointment."
     
+    from app.guardrails import guardrail_manager
+    
+    # 0. Evaluate Booking Guardrails (Working Hours, Past Dates, Weekend, Anti-Flooding)
+    guard_res = guardrail_manager.check_booking(date_str, time_str, reason, user_email)
+    if guard_res.blocked:
+        logger.warning(f"🛡️ Booking blocked by guardrail: {guard_res.guardrail}")
+        return guard_res.notification_message
+
     if not calendar_manager or not calendar_manager._ensure_authenticated():
         return (
             f"📅 Booking Request received for **{reason}** on **{date_str} at {time_str}**.\n\n"
@@ -378,6 +386,8 @@ async def _booking_agent_tool_async(date: str, time: str, reason: str = "General
             slot=f"{time_str} - {slot_end}",
             meeting_title=f"Meeting: {reason}"
         )
+
+        guardrail_manager.increment_booking_count("default")
 
         return (
             f"{cancel_msg}"
